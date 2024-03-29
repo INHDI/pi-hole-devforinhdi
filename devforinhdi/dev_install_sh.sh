@@ -62,8 +62,10 @@ IPV6_ADDRESS=${IPV6_ADDRESS}
 # Give settings their default values. These may be changed by prompts later in the script.
 QUERY_LOGGING=true
 INSTALL_WEB_INTERFACE=true
-PRIVACY_LEVEL=0
 CACHE_SIZE=10000
+
+# Select a privacy mode for FTL. https://docs.pi-hole.net/ftldns/privacylevels/
+PRIVACY_LEVEL=0
 
 if [ -z "${USER}" ]; then
     USER="$(id -un)"
@@ -913,6 +915,372 @@ chooseBlocklists() {
     fi
 }
 
+# Function to ask the user if they want to install the dashboard
+setAdminFlag() {
+    # Similar to the logging function, ask what the user wants
+    dialog --no-shadow --keep-tite \
+        --backtitle "Pihole Installation" \
+        --title "Admin Web Interface" \
+        --yesno "\\n\\nDo you want to install the Admin Web Interface?" \
+        "${r}" "${c}" && result=0 || result=$?
+
+    case ${result} in
+        "${DIALOG_OK}")
+            # If they chose yes,
+            printf "  %b Installing Admin Web Interface\\n" "${INFO}"
+            # Set the flag to install the web interface
+            INSTALL_WEB_INTERFACE=true
+            ;;
+        "${DIALOG_CANCEL}")
+            # If they chose no,
+            printf "  %b Not installing Admin Web Interface\\n" "${INFO}"
+            # Set the flag to not install the web interface
+            INSTALL_WEB_INTERFACE=false
+            INSTALL_WEB_SERVER=false
+            ;;
+        "${DIALOG_ESC}")
+            # User pressed <ESC>
+            printf "  %b Escape pressed, exiting installer at Admin Web Interface choice.%b\\n" "${COL_LIGHT_RED}" "${COL_NC}"
+            exit 1
+            ;;
+    esac
+
+    # If the user wants to install the Web admin interface (i.e. it has not been deselected above) and did not deselect the web server via command-line argument
+    if [[ "${INSTALL_WEB_INTERFACE}" == true && "${INSTALL_WEB_SERVER}" == true ]]; then
+        # Get list of required PHP modules, excluding base package (common) and handler (cgi)
+        local i php_modules
+        for i in "${PIHOLE_WEB_DEPS[@]}"; do [[ $i == 'php'* && $i != *'-common' && $i != *'-cgi' ]] && php_modules+=" ${i#*-}"; done
+        dialog --no-shadow --keep-tite \
+            --backtitle "Pi-hole Installation" \
+            --title "Web Server" \
+            --yesno "\\n\\nA web server is required for the Admin Web Interface.\
+\\n\\nDo you want to install lighttpd and the required PHP modules?\
+\\n\\nNB: If you disable this, and, do not have an existing web server \
+and required PHP modules (${php_modules# }) installed, the web interface \
+will not function. Additionally the web server user needs to be member of \
+the \"pihole\" group for full functionality." \
+            "${r}" "${c}" && result=0 || result=$?
+
+        case ${result} in
+            "${DIALOG_OK}")
+                # If they chose yes,
+                printf "  %b Installing lighttpd\\n" "${INFO}"
+                # Set the flag to install the web server
+                INSTALL_WEB_SERVER=true
+                ;;
+            "${DIALOG_CANCEL}")
+                # If they chose no,
+                printf "  %b Not installing lighttpd\\n" "${INFO}"
+                # Set the flag to not install the web server
+                INSTALL_WEB_SERVER=false
+                ;;
+            "${DIALOG_ESC}")
+                # User pressed <ESC>
+                printf "  %b Escape pressed, exiting installer at web server choice.%b\\n" "${COL_LIGHT_RED}" "${COL_NC}"
+                exit 1
+                ;;
+        esac
+    fi
+}
+
+# Allow the user to enable/disable logging
+setLogging() {
+    # Ask the user if they want to enable logging
+    dialog --no-shadow --keep-tite \
+        --backtitle "Pihole Installation" \
+        --title "Enable Logging" \
+        --yesno "\\n\\nWould you like to enable query logging?" \
+        "${r}" "${c}" && result=0 || result=$?
+
+    case ${result} in
+        "${DIALOG_OK}")
+            # If they chose yes,
+            printf "  %b Query Logging on.\\n" "${INFO}"
+            QUERY_LOGGING=true
+            ;;
+        "${DIALOG_CANCEL}")
+            # If they chose no,
+            printf "  %b Query Logging off.\\n" "${INFO}"
+            QUERY_LOGGING=false
+            ;;
+        "${DIALOG_ESC}")
+            # User pressed <ESC>
+            printf "  %b Escape pressed, exiting installer at Query Logging choice.%b\\n" "${COL_LIGHT_RED}" "${COL_NC}"
+            exit 1
+            ;;
+    esac
+}
+
+# Allow the user to set their FTL privacy level
+setPrivacyLevel() {
+    printf "  %b Using privacy level: %s\\n" "${INFO}" "${PRIVACY_LEVEL}"
+}
+
+# Used only in unattended setup
+# If there is already the adListFile, we keep it, else we create it using all default lists
+installDefaultBlocklists() {
+    # In unattended setup, could be useful to use userdefined blocklist.
+    # If this file exists, we avoid overriding it.
+    if [[ -f "${adlistFile}" ]]; then
+        return;
+    fi
+        echo "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" >> "${adlistFile}"
+}
+
+# Reset a repo to get rid of any local changed
+resetRepo() {
+    # Use named variables for arguments
+    local directory="${1}"
+    # Move into the directory
+    pushd "${directory}" &> /dev/null || return 1
+    # Store the message in a variable
+    str="Resetting repository within ${1}..."
+    # Show the message
+    printf "  %b %s..." "${INFO}" "${str}"
+    # Use git to remove the local changes
+    git reset --hard &> /dev/null || return $?
+    # Data in the repositories is public anyway so we can make it readable by everyone (+r to keep executable permission if already set by git)
+    chmod -R a+rX "${directory}"
+    # And show the status
+    printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+    # Return to where we came from
+    popd &> /dev/null || return 1
+    # Function succeeded, as "git reset" would have triggered a return earlier if it failed
+    return 0
+}
+
+# A function for checking if a directory is a git repository
+is_repo() {
+    # Use a named, local variable instead of the vague $1, which is the first argument passed to this function
+    # These local variables should always be lowercase
+    local directory="${1}"
+    # A variable to store the return code
+    local rc
+    # If the first argument passed to this function is a directory,
+    if [[ -d "${directory}" ]]; then
+        # move into the directory
+        pushd "${directory}" &> /dev/null || return 1
+        # Use git to check if the directory is a repo
+        # git -C is not used here to support git versions older than 1.8.4
+        git status --short &> /dev/null || rc=$?
+    # If the command was not successful,
+    else
+        # Set a non-zero return code if directory does not exist
+        rc=1
+    fi
+    # Move back into the directory the user started in
+    popd &> /dev/null || return 1
+    # Return the code; if one is not set, return 0
+    return "${rc:-0}"
+}
+
+# A function to clone a repo
+make_repo() {
+    # Set named variables for better readability
+    local directory="${1}"
+    local remoteRepo="${2}"
+
+    # The message to display when this function is running
+    str="Clone ${remoteRepo} into ${directory}"
+    # Display the message and use the color table to preface the message with an "info" indicator
+    printf "  %b %s..." "${INFO}" "${str}"
+    # If the directory exists,
+    if [[ -d "${directory}" ]]; then
+        # Return with a 1 to exit the installer. We don't want to overwrite what could already be here in case it is not ours
+        str="Unable to clone ${remoteRepo} into ${directory} : Directory already exists"
+        printf "%b  %b%s\\n" "${OVER}" "${CROSS}" "${str}"
+        return 1
+    fi
+    # Clone the repo and return the return code from this command
+    git clone -q --depth 20 "${remoteRepo}" "${directory}" &> /dev/null || return $?
+    # Move into the directory that was passed as an argument
+    pushd "${directory}" &> /dev/null || return 1
+    # Check current branch. If it is master, then reset to the latest available tag.
+    # In case extra commits have been added after tagging/release (i.e in case of metadata updates/README.MD tweaks)
+    curBranch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "${curBranch}" == "master" ]]; then
+        # If we're calling make_repo() then it should always be master, we may not need to check.
+        git reset --hard "$(git describe --abbrev=0 --tags)" || return $?
+    fi
+    # Show a colored message showing it's status
+    printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+    # Data in the repositories is public anyway so we can make it readable by everyone (+r to keep executable permission if already set by git)
+    chmod -R a+rX "${directory}"
+    # Move back into the original directory
+    popd &> /dev/null || return 1
+    return 0
+}
+
+# We need to make sure the repos are up-to-date so we can effectively install Clean out the directory if it exists for git to clone into
+update_repo() {
+    # Use named, local variables
+    # As you can see, these are the same variable names used in the last function,
+    # but since they are local, their scope does not go beyond this function
+    # This helps prevent the wrong value from being assigned if you were to set the variable as a GLOBAL one
+    local directory="${1}"
+    local curBranch
+
+    # A variable to store the message we want to display;
+    # Again, it's useful to store these in variables in case we need to reuse or change the message;
+    # we only need to make one change here
+    local str="Update repo in ${1}"
+    # Move into the directory that was passed as an argument
+    pushd "${directory}" &> /dev/null || return 1
+    # Let the user know what's happening
+    printf "  %b %s..." "${INFO}" "${str}"
+    # Stash any local commits as they conflict with our working code
+    git stash --all --quiet &> /dev/null || true # Okay for stash failure
+    git clean --quiet --force -d || true # Okay for already clean directory
+    # Pull the latest commits
+    git pull --no-rebase --quiet &> /dev/null || return $?
+    # Check current branch. If it is master, then reset to the latest available tag.
+    # In case extra commits have been added after tagging/release (i.e in case of metadata updates/README.MD tweaks)
+    curBranch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "${curBranch}" == "master" ]]; then
+        git reset --hard "$(git describe --abbrev=0 --tags)" || return $?
+    fi
+    # Show a completion message
+    printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+    # Data in the repositories is public anyway so we can make it readable by everyone (+r to keep executable permission if already set by git)
+    chmod -R a+rX "${directory}"
+    # Move back into the original directory
+    popd &> /dev/null || return 1
+    return 0
+}
+
+
+# A function that combines the previous git functions to update or clone a repo
+getGitFiles() {
+    # Setup named variables for the git repos
+    # We need the directory
+    local directory="${1}"
+    # as well as the repo URL
+    local remoteRepo="${2}"
+    # A local variable containing the message to be displayed
+    local str="Check for existing repository in ${1}"
+    # Show the message
+    printf "  %b %s..." "${INFO}" "${str}"
+    # Check if the directory is a repository
+    if is_repo "${directory}"; then
+        # Show that we're checking it
+        printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+        # Update the repo, returning an error message on failure
+        update_repo "${directory}" || { printf "\\n  %b: Could not update local repository. Contact support.%b\\n" "${COL_LIGHT_RED}" "${COL_NC}"; exit 1; }
+    # If it's not a .git repo,
+    else
+        # Show an error
+        printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+        # Attempt to make the repository, showing an error on failure
+        make_repo "${directory}" "${remoteRepo}" || { printf "\\n  %bError: Could not update local repository. Contact support.%b\\n" "${COL_LIGHT_RED}" "${COL_NC}"; exit 1; }
+    fi
+    echo ""
+    # Success via one of the two branches, as the commands would exit if they failed.
+    return 0
+}
+
+clone_or_update_repos() {
+    # If the user wants to reconfigure,
+    if [[ "${reconfigure}" == true ]]; then
+        printf "  %b Performing reconfiguration, skipping download of local repos\\n" "${INFO}"
+        # Reset the Core repo
+        resetRepo ${PI_HOLE_LOCAL_REPO} || \
+        { printf "  %b Unable to reset %s, exiting installer%b\\n" "${COL_LIGHT_RED}" "${PI_HOLE_LOCAL_REPO}" "${COL_NC}"; \
+        exit 1; \
+        }
+        # If the Web interface was installed,
+        if [[ "${INSTALL_WEB_INTERFACE}" == true ]]; then
+            # reset it's repo
+            resetRepo ${webInterfaceDir} || \
+            { printf "  %b Unable to reset %s, exiting installer%b\\n" "${COL_LIGHT_RED}" "${webInterfaceDir}" "${COL_NC}"; \
+            exit 1; \
+            }
+        fi
+    # Otherwise, a repair is happening
+    else
+        # so get git files for Core
+        getGitFiles ${PI_HOLE_LOCAL_REPO} ${piholeGitUrl} || \
+        { printf "  %b Unable to clone %s into %s, unable to continue%b\\n" "${COL_LIGHT_RED}" "${piholeGitUrl}" "${PI_HOLE_LOCAL_REPO}" "${COL_NC}"; \
+        exit 1; \
+        }
+        # If the Web interface was installed,
+        if [[ "${INSTALL_WEB_INTERFACE}" == true ]]; then
+            # get the Web git files
+            getGitFiles ${webInterfaceDir} ${webInterfaceGitUrl} || \
+            { printf "  %b Unable to clone %s into ${webInterfaceDir}, exiting installer%b\\n" "${COL_LIGHT_RED}" "${webInterfaceGitUrl}" "${COL_NC}"; \
+            exit 1; \
+            }
+        fi
+    fi
+}
+
+# Check if the dnsfis user exists and create if it does not
+create_dnsfis_user() {
+    local str="Checking for user 'dnsfis'"
+    printf "  %b %s..." "${INFO}" "${str}"
+    # If the dnsfis user exists,
+    if id -u dnsfis &> /dev/null; then
+        # and if the dnsfis group exists,
+        if getent group dnsfis > /dev/null 2>&1; then
+            # succeed
+            printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+        else
+            local str="Checking for group 'dnsfis'"
+            printf "  %b %s..." "${INFO}" "${str}"
+            local str="Creating group 'dnsfis'"
+            # if group can be created
+            if groupadd dnsfis; then
+                printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+                local str="Adding user 'dnsfis' to group 'dnsfis'"
+                printf "  %b %s..." "${INFO}" "${str}"
+                # if dnsfis user can be added to group dnsfis
+                if usermod -g dnsfis dnsfis; then
+                    printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+                else
+                    printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+                fi
+            else
+                printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+            fi
+        fi
+    else
+        # If the dnsfis user doesn't exist,
+        printf "%b  %b %s" "${OVER}" "${CROSS}" "${str}"
+        local str="Checking for group 'dnsfis'"
+        printf "  %b %s..." "${INFO}" "${str}"
+        if getent group dnsfis > /dev/null 2>&1; then
+            # group dnsfis exists
+            printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+            # then create and add her to the dnsfis group
+            local str="Creating user 'dnsfis'"
+            printf "%b  %b %s..." "${OVER}" "${INFO}" "${str}"
+            if useradd -r --no-user-group -g dnsfis -s /usr/sbin/nologin dnsfis; then
+                printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+            else
+                printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+            fi
+        else
+            # group dnsfis does not exist
+            printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+            local str="Creating group 'dnsfis'"
+            # if group can be created
+            if groupadd dnsfis; then
+                printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+                # create and add dnsfis user to the dnsfis group
+                local str="Creating user 'dnsfis'"
+                printf "%b  %b %s..." "${OVER}" "${INFO}" "${str}"
+                if useradd -r --no-user-group -g dnsfis -s /usr/sbin/nologin dnsfis; then
+                    printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+                else
+                    printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+                fi
+
+            else
+                printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+            fi
+        fi
+    fi
+}
+
 main() {
     local str="Root user check"
     printf "\\n"
@@ -999,10 +1367,56 @@ main() {
         setDNS
         # Give the user a choice of blocklists to include in their install. Or not.
         chooseBlocklists
+        # Let the user decide if they want the web interface to be installed automatically
+        setAdminFlag
+        # Let the user decide if they want query logging enabled...
+        setLogging
+        # Let the user decide the FTL privacy level
+        setPrivacyLevel
     else
-        echo "zzzz"
+        # Setup adlist file if not exists
+        installDefaultBlocklists
 
+        # Source ${setupVars} to use predefined user variables in the functions
+        source "${setupVars}"
+
+        # Get the privacy level if it exists (default is 0)
+        if [[ -f "${FTL_CONFIG_FILE}" ]]; then
+            # get the value from $FTL_CONFIG_FILE (and ignoring all commented lines)
+            PRIVACY_LEVEL=$(sed -e '/^[[:blank:]]*#/d' "${FTL_CONFIG_FILE}" | grep "PRIVACYLEVEL" | awk -F "=" 'NR==1{printf$2}')
+
+            # If no setting was found, default to 0
+            PRIVACY_LEVEL="${PRIVACY_LEVEL:-0}"
+        fi
     fi
+    # Download or update the scripts by updating the appropriate git repos
+    clone_or_update_repos
+
+    # Install the Core dependencies
+    local dep_install_list=("${PIHOLE_DEPS[@]}")
+    if [[ "${INSTALL_WEB_SERVER}" == true ]]; then
+        # And, if the setting says so, install the Web admin interface dependencies
+        dep_install_list+=("${PIHOLE_WEB_DEPS[@]}")
+    fi
+
+    # Install packages used by the actual software
+    printf "  %b Checking for / installing Required dependencies for Pi-hole software...\\n" "${INFO}"
+    install_dependent_packages "${dep_install_list[@]}"
+    unset dep_install_list
+
+    # On some systems, lighttpd is not enabled on first install. We need to enable it here if the user
+    # has chosen to install the web interface, else the LIGHTTPD_ENABLED check will fail
+    if [[ "${INSTALL_WEB_SERVER}" == true ]]; then
+        enable_service lighttpd
+    fi
+    # Determine if lighttpd is correctly enabled
+    if check_service_active "lighttpd"; then
+        LIGHTTPD_ENABLED=true
+    else
+        LIGHTTPD_ENABLED=false
+    fi
+
+    create_dnsfis_user
 
 }
 
