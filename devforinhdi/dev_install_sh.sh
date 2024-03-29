@@ -1213,27 +1213,27 @@ clone_or_update_repos() {
     fi
 }
 
-# Check if the dnsfis user exists and create if it does not
-create_dnsfis_user() {
-    local str="Checking for user 'dnsfis'"
+# Check if the pihole user exists and create if it does not
+create_pihole_user() {
+    local str="Checking for user 'pihole'"
     printf "  %b %s..." "${INFO}" "${str}"
-    # If the dnsfis user exists,
-    if id -u dnsfis &> /dev/null; then
-        # and if the dnsfis group exists,
-        if getent group dnsfis > /dev/null 2>&1; then
+    # If the pihole user exists,
+    if id -u pihole &> /dev/null; then
+        # and if the pihole group exists,
+        if getent group pihole > /dev/null 2>&1; then
             # succeed
             printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
         else
-            local str="Checking for group 'dnsfis'"
+            local str="Checking for group 'pihole'"
             printf "  %b %s..." "${INFO}" "${str}"
-            local str="Creating group 'dnsfis'"
+            local str="Creating group 'pihole'"
             # if group can be created
-            if groupadd dnsfis; then
+            if groupadd pihole; then
                 printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
-                local str="Adding user 'dnsfis' to group 'dnsfis'"
+                local str="Adding user 'pihole' to group 'pihole'"
                 printf "  %b %s..." "${INFO}" "${str}"
-                # if dnsfis user can be added to group dnsfis
-                if usermod -g dnsfis dnsfis; then
+                # if pihole user can be added to group pihole
+                if usermod -g pihole pihole; then
                     printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
                 else
                     printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
@@ -1243,32 +1243,32 @@ create_dnsfis_user() {
             fi
         fi
     else
-        # If the dnsfis user doesn't exist,
+        # If the pihole user doesn't exist,
         printf "%b  %b %s" "${OVER}" "${CROSS}" "${str}"
-        local str="Checking for group 'dnsfis'"
+        local str="Checking for group 'pihole'"
         printf "  %b %s..." "${INFO}" "${str}"
-        if getent group dnsfis > /dev/null 2>&1; then
-            # group dnsfis exists
+        if getent group pihole > /dev/null 2>&1; then
+            # group pihole exists
             printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
-            # then create and add her to the dnsfis group
-            local str="Creating user 'dnsfis'"
+            # then create and add her to the pihole group
+            local str="Creating user 'pihole'"
             printf "%b  %b %s..." "${OVER}" "${INFO}" "${str}"
-            if useradd -r --no-user-group -g dnsfis -s /usr/sbin/nologin dnsfis; then
+            if useradd -r --no-user-group -g pihole -s /usr/sbin/nologin pihole; then
                 printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
             else
                 printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
             fi
         else
-            # group dnsfis does not exist
+            # group pihole does not exist
             printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
-            local str="Creating group 'dnsfis'"
+            local str="Creating group 'pihole'"
             # if group can be created
-            if groupadd dnsfis; then
+            if groupadd pihole; then
                 printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
-                # create and add dnsfis user to the dnsfis group
-                local str="Creating user 'dnsfis'"
+                # create and add pihole user to the pihole group
+                local str="Creating user 'pihole'"
                 printf "%b  %b %s..." "${OVER}" "${INFO}" "${str}"
-                if useradd -r --no-user-group -g dnsfis -s /usr/sbin/nologin dnsfis; then
+                if useradd -r --no-user-group -g pihole -s /usr/sbin/nologin pihole; then
                     printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
                 else
                     printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
@@ -1279,6 +1279,846 @@ create_dnsfis_user() {
             fi
         fi
     fi
+}
+
+# Start/Restart service passed in as argument
+restart_service() {
+    # Local, named variables
+    local str="Restarting ${1} service"
+    printf "  %b %s..." "${INFO}" "${str}"
+    # If systemctl exists,
+    if is_command systemctl ; then
+        # use that to restart the service
+        systemctl restart "${1}" &> /dev/null
+    else
+        # Otherwise, fall back to the service command
+        service "${1}" restart &> /dev/null
+    fi
+    printf "%b  %b %s...\\n" "${OVER}" "${TICK}" "${str}"
+}
+
+# Enable service so that it will start with next reboot
+enable_service() {
+    # Local, named variables
+    local str="Enabling ${1} service to start on reboot"
+    printf "  %b %s..." "${INFO}" "${str}"
+    # If systemctl exists,
+    if is_command systemctl ; then
+        # use that to enable the service
+        systemctl enable "${1}" &> /dev/null
+    else
+        #  Otherwise, use update-rc.d to accomplish this
+        update-rc.d "${1}" defaults &> /dev/null
+    fi
+    printf "%b  %b %s...\\n" "${OVER}" "${TICK}" "${str}"
+}
+
+# Disable service so that it will not with next reboot
+disable_service() {
+    # Local, named variables
+    local str="Disabling ${1} service"
+    printf "  %b %s..." "${INFO}" "${str}"
+    # If systemctl exists,
+    if is_command systemctl ; then
+        # use that to disable the service
+        systemctl disable "${1}" &> /dev/null
+    else
+        # Otherwise, use update-rc.d to accomplish this
+        update-rc.d "${1}" disable &> /dev/null
+    fi
+    printf "%b  %b %s...\\n" "${OVER}" "${TICK}" "${str}"
+}
+
+check_service_active() {
+    # If systemctl exists,
+    if is_command systemctl ; then
+        # use that to check the status of the service
+        systemctl is-enabled "${1}" &> /dev/null
+    else
+        # Otherwise, fall back to service command
+        service "${1}" status &> /dev/null
+    fi
+}
+
+# Clean an existing installation to prepare for upgrade/reinstall
+clean_existing() {
+    # Local, named variables
+    # ${1} Directory to clean
+    local clean_directory="${1}"
+    # Pop the first argument, and shift all addresses down by one (i.e. ${2} becomes ${1})
+    shift
+    # Then, we can access all arguments ($@) without including the directory to clean
+    local old_files=( "$@" )
+
+    # Remove each script in the old_files array
+    for script in "${old_files[@]}"; do
+        rm -f "${clean_directory}/${script}.sh"
+    done
+}
+
+# Install the scripts from repository to their various locations
+installScripts() {
+    # Local, named variables
+    local str="Installing scripts from ${PI_HOLE_LOCAL_REPO}"
+    printf "  %b %s..." "${INFO}" "${str}"
+
+    # Clear out script files from Pi-hole scripts directory.
+    clean_existing "${PI_HOLE_INSTALL_DIR}" "${PI_HOLE_FILES[@]}"
+
+    # Install files from local core repository
+    if is_repo "${PI_HOLE_LOCAL_REPO}"; then
+        # move into the directory
+        cd "${PI_HOLE_LOCAL_REPO}"
+        # Install the scripts by:
+        #  -o setting the owner to the user
+        #  -Dm755 create all leading components of destination except the last, then copy the source to the destination and setting the permissions to 755
+        #
+        # This first one is the directory
+        install -o "${USER}" -Dm755 -d "${PI_HOLE_INSTALL_DIR}"
+        # The rest are the scripts Pi-hole needs
+        install -o "${USER}" -Dm755 -t "${PI_HOLE_INSTALL_DIR}" gravity.sh
+        install -o "${USER}" -Dm755 -t "${PI_HOLE_INSTALL_DIR}" ./advanced/Scripts/*.sh
+        install -o "${USER}" -Dm755 -t "${PI_HOLE_INSTALL_DIR}" ./automated\ install/uninstall.sh
+        install -o "${USER}" -Dm755 -t "${PI_HOLE_INSTALL_DIR}" ./advanced/Scripts/COL_TABLE
+        install -o "${USER}" -Dm755 -t "${PI_HOLE_BIN_DIR}" pihole
+        install -Dm644 ./advanced/bash-completion/pihole /etc/bash_completion.d/pihole
+        printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+
+    else
+        # Otherwise, show an error and exit
+        printf "%b  %b %s\\n" "${OVER}"  "${CROSS}" "${str}"
+        printf "\\t\\t%bError: Local repo %s not found, exiting installer%b\\n" "${COL_LIGHT_RED}" "${PI_HOLE_LOCAL_REPO}" "${COL_NC}"
+        return 1
+    fi
+}
+
+get_binary_name() {
+    # This gives the machine architecture which may be different from the OS architecture...
+    local machine
+    machine=$(uname -m)
+
+    local l_binary
+
+    local str="Detecting processor"
+    printf "  %b %s..." "${INFO}" "${str}"
+    # If the machine is arm or aarch
+    if [[ "${machine}" == "x86_64" ]]; then
+        # This gives the processor of packages dpkg installs (for example, "i386")
+        local dpkgarch
+        dpkgarch=$(dpkg --print-processor 2> /dev/null || dpkg --print-architecture 2> /dev/null)
+
+        # Special case: This is a 32 bit OS, installed on a 64 bit machine
+        # -> change machine processor to download the 32 bit executable
+        # We only check this for Debian-based systems as this has been an issue
+        # in the past (see https://github.com/pi-hole/pi-hole/pull/2004)
+        if [[ "${dpkgarch}" == "i386" ]]; then
+            printf "%b  %b Detected 32bit (i686) processor\\n" "${OVER}" "${TICK}"
+            l_binary="pihole-FTL-linux-x86_32"
+        else
+            # 64bit
+            printf "%b  %b Detected x86_64 processor\\n" "${OVER}" "${TICK}"
+            # set the binary to be used
+            l_binary="pihole-FTL-linux-x86_64"
+        fi
+    else
+        # Something else - we try to use 32bit executable and warn the user
+        if [[ ! "${machine}" == "i686" ]]; then
+            printf "%b  %b %s...\\n" "${OVER}" "${CROSS}" "${str}"
+            printf "  %b %bNot able to detect processor (unknown: %s), trying x86 (32bit) executable%b\\n" "${INFO}" "${COL_LIGHT_RED}" "${machine}" "${COL_NC}"
+            printf "  %b Contact Admin Support if you experience issues (e.g: FTL not running)\\n" "${INFO}"
+        else
+            printf "%b  %b Detected 32bit (i686) processor\\n" "${OVER}" "${TICK}"
+        fi
+        l_binary="pihole-FTL-linux-x86_32"
+    fi
+
+    # Returning a string value via echo
+    echo ${l_binary}
+}
+
+
+# Download FTL binary to random temp directory and install FTL binary
+# Disable directive for SC2120 a value _can_ be passed to this function, but it is passed from an external script that sources this one
+# shellcheck disable=SC2120
+FTLinstall() {
+    # Local, named variables
+    local str="Downloading and Installing FTL"
+    printf "  %b %s..." "${INFO}" "${str}"
+
+    # Move into the temp ftl directory
+    pushd "$(mktemp -d)" > /dev/null || { printf "Unable to make temporary directory for FTL binary download\\n"; return 1; }
+
+    local ftlBranch
+    local url
+
+    if [[ -f "/etc/pihole/ftlbranch" ]];then
+        ftlBranch=$(</etc/pihole/ftlbranch)
+    else
+        ftlBranch="master"
+    fi
+
+    local binary
+    binary="${1}"
+
+    # Determine which version of FTL to download
+    if [[ "${ftlBranch}" == "master" ]];then
+        url="https://github.com/pi-hole/ftl/releases/latest/download"
+    else
+        url="https://ftl.pi-hole.net/${ftlBranch}"
+    fi
+
+    if curl -sSL --fail "${url}/${binary}" -o "${binary}"; then
+        # If the download worked, get sha1 of the binary we just downloaded for verification.
+        curl -sSL --fail "${url}/${binary}.sha1" -o "${binary}.sha1"
+
+        # If we downloaded binary file (as opposed to text),
+        if sha1sum --status --quiet -c "${binary}".sha1; then
+            printf "transferred... "
+
+            # Before stopping FTL, we download the macvendor database
+            curl -sSL "https://ftl.pi-hole.net/macvendor.db" -o "${PI_HOLE_CONFIG_DIR}/macvendor.db" || true
+
+            # Stop pihole-FTL service if available
+            stop_service pihole-FTL &> /dev/null
+
+            # Install the new version with the correct permissions
+            install -T -m 0755 "${binary}" /usr/bin/pihole-FTL
+
+            # Move back into the original directory the user was in
+            popd > /dev/null || { printf "Unable to return to original directory after FTL binary download.\\n"; return 1; }
+
+            # Installed the FTL service
+            printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+            return 0
+        else
+            # Otherwise, the hash download failed, so print and exit.
+            popd > /dev/null || { printf "Unable to return to original directory after FTL binary download.\\n"; return 1; }
+            printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+            printf "  %b Error: Download of %s/%s failed (checksum error)%b\\n" "${COL_LIGHT_RED}" "${url}" "${binary}" "${COL_NC}"
+            return 1
+        fi
+    else
+        # Otherwise, the download failed, so print and exit.
+        popd > /dev/null || { printf "Unable to return to original directory after FTL binary download.\\n"; return 1; }
+        printf "%b  %b %s\\n" "${OVER}" "${CROSS}" "${str}"
+        # The URL could not be found
+        printf "  %b Error: URL %s/%s not found%b\\n" "${COL_LIGHT_RED}" "${url}" "${binary}" "${COL_NC}"
+        return 1
+    fi
+}
+
+
+FTLcheckUpdate() {
+    #In the next section we check to see if FTL is already installed (in case of pihole -r).
+    #If the installed version matches the latest version, then check the installed sha1sum of the binary vs the remote sha1sum. If they do not match, then download
+    printf "  %b Checking for existing FTL binary...\\n" "${INFO}"
+
+    local ftlLoc
+    ftlLoc=$(command -v pihole-FTL 2>/dev/null)
+
+    local ftlBranch
+
+    if [[ -f "/etc/pihole/ftlbranch" ]];then
+        ftlBranch=$(</etc/pihole/ftlbranch)
+    else
+        ftlBranch="master"
+    fi
+
+    local binary
+    binary="${1}"
+
+    local remoteSha1
+    local localSha1
+
+    # if dnsmasq exists and is running at this point, force reinstall of FTL Binary
+    if is_command dnsmasq; then
+        if check_service_active "dnsmasq";then
+            return 0
+        fi
+    fi
+
+    if [[ ! "${ftlBranch}" == "master" ]]; then
+        #Check whether or not the binary for this FTL branch actually exists. If not, then there is no update!
+        local path
+        path="${ftlBranch}/${binary}"
+        # shellcheck disable=SC1090
+        if ! check_download_exists "$path"; then
+            printf "  %b Branch \"%s\" is not available.\\n" "${INFO}" "${ftlBranch}"
+            printf "  %b Use %bpihole checkout ftl [branchname]%b to switch to a valid branch.\\n" "${INFO}" "${COL_LIGHT_GREEN}" "${COL_NC}"
+            return 2
+        fi
+
+        if [[ ${ftlLoc} ]]; then
+            # We already have a pihole-FTL binary downloaded.
+            # Alt branches don't have a tagged version against them, so just confirm the checksum of the local vs remote to decide whether we download or not
+            remoteSha1=$(curl -sSL --fail "https://ftl.pi-hole.net/${ftlBranch}/${binary}.sha1" | cut -d ' ' -f 1)
+            localSha1=$(sha1sum "$(command -v pihole-FTL)" | cut -d ' ' -f 1)
+
+            if [[ "${remoteSha1}" != "${localSha1}" ]]; then
+                printf "  %b Checksums do not match, downloading from ftl.pi-hole.net.\\n" "${INFO}"
+                return 0
+            else
+                printf "  %b Checksum of installed binary matches remote. No need to download!\\n" "${INFO}"
+                return 1
+            fi
+        else
+            return 0
+        fi
+    else
+        if [[ ${ftlLoc} ]]; then
+            local FTLversion
+            FTLversion=$(/usr/bin/pihole-FTL tag)
+            local FTLlatesttag
+
+            if ! FTLlatesttag=$(curl -sI https://github.com/pi-hole/FTL/releases/latest | grep --color=never -i Location: | awk -F / '{print $NF}' | tr -d '[:cntrl:]'); then
+                # There was an issue while retrieving the latest version
+                printf "  %b Failed to retrieve latest FTL release metadata" "${CROSS}"
+                return 3
+            fi
+
+            if [[ "${FTLversion}" != "${FTLlatesttag}" ]]; then
+                return 0
+            else
+                printf "  %b Latest FTL Binary already installed (%s). Confirming Checksum...\\n" "${INFO}" "${FTLlatesttag}"
+
+                remoteSha1=$(curl -sSL --fail "https://github.com/pi-hole/FTL/releases/download/${FTLversion%$'\r'}/${binary}.sha1" | cut -d ' ' -f 1)
+                localSha1=$(sha1sum "$(command -v pihole-FTL)" | cut -d ' ' -f 1)
+
+                if [[ "${remoteSha1}" != "${localSha1}" ]]; then
+                    printf "  %b Corruption detected...\\n" "${INFO}"
+                    return 0
+                else
+                    printf "  %b Checksum correct. No need to download!\\n" "${INFO}"
+                    return 1
+                fi
+            fi
+        else
+            return 0
+        fi
+    fi
+}
+
+# Detect suitable FTL binary platform
+FTLdetect() {
+    printf "\\n  %b FTL Checks...\\n\\n" "${INFO}"
+
+    printf "  %b" "${2}"
+
+    if FTLcheckUpdate "${1}"; then
+        FTLinstall "${1}" || return 1
+    fi
+}
+
+# Installs a cron file
+installCron() {
+    # Install the cron job
+    local str="Installing latest Cron script"
+    printf "\\n  %b %s..." "${INFO}" "${str}"
+    # Copy the cron file over from the local repo
+    # File must not be world or group writeable and must be owned by root
+    install -D -m 644 -T -o root -g root ${PI_HOLE_LOCAL_REPO}/advanced/Templates/pihole.cron /etc/cron.d/pihole
+    # Randomize gravity update time
+    sed -i "s/59 1 /$((1 + RANDOM % 58)) $((3 + RANDOM % 2))/" /etc/cron.d/pihole
+    # Randomize update checker time
+    sed -i "s/59 17/$((1 + RANDOM % 58)) $((12 + RANDOM % 8))/" /etc/cron.d/pihole
+    printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+}
+
+# Gravity is a very important script as it aggregates all of the domains into a single HOSTS formatted list,
+# which is what Pi-hole needs to begin blocking ads
+runGravity() {
+    # Run gravity in the current shell
+    { /opt/pihole/gravity.sh --force; }
+}
+
+# Install the logrotate script
+installLogrotate() {
+    local str="Installing latest logrotate script"
+    local target=/etc/pihole/logrotate
+
+    printf "\\n  %b %s..." "${INFO}" "${str}"
+    if [[ -f ${target} ]]; then
+
+        # Account for changed logfile paths from /var/log -> /var/log/pihole/ made in core v5.11.
+        if  grep -q "/var/log/pihole.log" ${target}  ||  grep -q "/var/log/pihole-FTL.log" ${target}; then
+            sed -i 's/\/var\/log\/pihole.log/\/var\/log\/pihole\/pihole.log/g' ${target}
+            sed -i 's/\/var\/log\/pihole-FTL.log/\/var\/log\/pihole\/FTL.log/g' ${target}
+
+            printf "\\n\\t%b Old log file paths updated in existing logrotate file. \\n" "${INFO}"
+            return 3
+        fi
+
+        printf "\\n\\t%b Existing logrotate file found. No changes made.\\n" "${INFO}"
+        # Return value isn't that important, using 2 to indicate that it's not a fatal error but
+        # the function did not complete.
+        return 2
+    fi
+    # Copy the file over from the local repo
+    install -D -m 644 -T "${PI_HOLE_LOCAL_REPO}"/advanced/Templates/logrotate ${target}
+    # Different operating systems have different user / group
+    # settings for logrotate that makes it impossible to create
+    # a static logrotate file that will work with e.g.
+    # Rasbian and Ubuntu at the same time. Hence, we have to
+    # customize the logrotate script here in order to reflect
+    # the local properties of the /var/log directory
+    logusergroup="$(stat -c '%U %G' /var/log)"
+    # If there is a usergroup for log rotation,
+    if [[ -n "${logusergroup}" ]]; then
+        # replace the line in the logrotate script with that usergroup.
+        sed -i "s/# su #/su ${logusergroup}/g;" ${target}
+    fi
+    printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+}
+
+disable_dnsmasq() {
+    # dnsmasq can now be stopped and disabled if it exists
+    if is_command dnsmasq; then
+        if check_service_active "dnsmasq";then
+            printf "  %b FTL can now resolve DNS Queries without dnsmasq running separately\\n" "${INFO}"
+            stop_service dnsmasq
+            disable_service dnsmasq
+        fi
+    fi
+
+    # Backup existing /etc/dnsmasq.conf if present and ensure that
+    # /etc/dnsmasq.conf contains only "conf-dir=/etc/dnsmasq.d"
+    local conffile="/etc/dnsmasq.conf"
+    if [[ -f "${conffile}" ]]; then
+        printf "  %b Backing up %s to %s.old\\n" "${INFO}" "${conffile}" "${conffile}"
+        mv "${conffile}" "${conffile}.old"
+    fi
+    # Create /etc/dnsmasq.conf
+    echo "conf-dir=/etc/dnsmasq.d" > "${conffile}"
+    chmod 644 "${conffile}"
+}
+
+install_manpage() {
+    # Copy Pi-hole man pages and call mandb to update man page database
+    # Default location for man files for /usr/local/bin is /usr/local/share/man
+    # on lightweight systems may not be present, so check before copying.
+    printf "  %b Testing man page installation" "${INFO}"
+    if ! is_command mandb ; then
+        # if mandb is not present, no manpage support
+        printf "%b  %b man not installed\\n" "${OVER}" "${INFO}"
+        return
+    elif [[ ! -d "/usr/local/share/man" ]]; then
+        # appropriate directory for Pi-hole's man page is not present
+        printf "%b  %b man pages not installed\\n" "${OVER}" "${INFO}"
+        return
+    fi
+    if [[ ! -d "/usr/local/share/man/man8" ]]; then
+        # if not present, create man8 directory
+        install -d -m 755 /usr/local/share/man/man8
+    fi
+    if [[ ! -d "/usr/local/share/man/man5" ]]; then
+        # if not present, create man5 directory
+        install -d -m 755 /usr/local/share/man/man5
+    fi
+    # Testing complete, copy the files & update the man db
+    install -D -m 644 -T ${PI_HOLE_LOCAL_REPO}/manpages/pihole.8 /usr/local/share/man/man8/pihole.8
+    install -D -m 644 -T ${PI_HOLE_LOCAL_REPO}/manpages/pihole-FTL.8 /usr/local/share/man/man8/pihole-FTL.8
+
+    # remove previously installed "pihole-FTL.conf.5" man page
+    if [[ -f "/usr/local/share/man/man5/pihole-FTL.conf.5" ]]; then
+        rm /usr/local/share/man/man5/pihole-FTL.conf.5
+    fi
+
+    if mandb -q &>/dev/null; then
+        # Updated successfully
+        printf "%b  %b man pages installed and database updated\\n" "${OVER}" "${TICK}"
+        return
+    else
+        # Something is wrong with the system's man installation, clean up
+        # our files, (leave everything how we found it).
+        rm /usr/local/share/man/man8/pihole.8 /usr/local/share/man/man8/pihole-FTL.8
+        printf "%b  %b man page db not updated, man pages not installed\\n" "${OVER}" "${CROSS}"
+    fi
+}
+
+
+# Check if /etc/dnsmasq.conf is from pi-hole.  If so replace with an original and install new in .d directory
+version_check_dnsmasq() {
+    # Local, named variables
+    local dnsmasq_conf="/etc/dnsmasq.conf"
+    local dnsmasq_conf_orig="/etc/dnsmasq.conf.orig"
+    local dnsmasq_pihole_id_string="addn-hosts=/etc/pihole/gravity.list"
+    local dnsmasq_pihole_id_string2="# Dnsmasq config for Pi-hole's FTLDNS"
+    local dnsmasq_original_config="${PI_HOLE_LOCAL_REPO}/advanced/dnsmasq.conf.original"
+    local dnsmasq_pihole_01_source="${PI_HOLE_LOCAL_REPO}/advanced/01-pihole.conf"
+    local dnsmasq_pihole_01_target="/etc/dnsmasq.d/01-pihole.conf"
+    local dnsmasq_rfc6761_06_source="${PI_HOLE_LOCAL_REPO}/advanced/06-rfc6761.conf"
+    local dnsmasq_rfc6761_06_target="/etc/dnsmasq.d/06-rfc6761.conf"
+
+    # If the dnsmasq config file exists
+    if [[ -f "${dnsmasq_conf}" ]]; then
+        printf "  %b Existing dnsmasq.conf found..." "${INFO}"
+        # If a specific string is found within this file, we presume it's from older versions on Pi-hole,
+        if grep -q "${dnsmasq_pihole_id_string}" "${dnsmasq_conf}" ||
+           grep -q "${dnsmasq_pihole_id_string2}" "${dnsmasq_conf}"; then
+            printf " it is from a previous Pi-hole install.\\n"
+            printf "  %b Backing up dnsmasq.conf to dnsmasq.conf.orig..." "${INFO}"
+            # so backup the original file,
+            mv -f "${dnsmasq_conf}" "${dnsmasq_conf_orig}"
+            printf "%b  %b Backing up dnsmasq.conf to dnsmasq.conf.orig...\\n" "${OVER}"  "${TICK}"
+            printf "  %b Restoring default dnsmasq.conf..." "${INFO}"
+            # and replace it with the default
+            install -D -m 644 -T "${dnsmasq_original_config}" "${dnsmasq_conf}"
+            printf "%b  %b Restoring default dnsmasq.conf...\\n" "${OVER}"  "${TICK}"
+        else
+            # Otherwise, don't to anything
+            printf " it is not a Pi-hole file, leaving alone!\\n"
+        fi
+    else
+        # If a file cannot be found,
+        printf "  %b No dnsmasq.conf found... restoring default dnsmasq.conf..." "${INFO}"
+        # restore the default one
+        install -D -m 644 -T "${dnsmasq_original_config}" "${dnsmasq_conf}"
+        printf "%b  %b No dnsmasq.conf found... restoring default dnsmasq.conf...\\n" "${OVER}"  "${TICK}"
+    fi
+
+    printf "  %b Installing %s..." "${INFO}" "${dnsmasq_pihole_01_target}"
+    # Check to see if dnsmasq directory exists (it may not due to being a fresh install and dnsmasq no longer being a dependency)
+    if [[ ! -d "/etc/dnsmasq.d"  ]];then
+        install -d -m 755 "/etc/dnsmasq.d"
+    fi
+    # Copy the new Pi-hole DNS config file into the dnsmasq.d directory
+    install -D -m 644 -T "${dnsmasq_pihole_01_source}" "${dnsmasq_pihole_01_target}"
+    printf "%b  %b Installed %s\n" "${OVER}"  "${TICK}" "${dnsmasq_pihole_01_target}"
+    # Add settings with the GLOBAL DNS variables that we populated earlier
+    # First, set the interface to listen on
+    addOrEditKeyValPair "${dnsmasq_pihole_01_target}" "interface" "$PIHOLE_INTERFACE"
+    if [[ "${PIHOLE_DNS_1}" != "" ]]; then
+        # then add in the primary DNS server.
+        addOrEditKeyValPair "${dnsmasq_pihole_01_target}" "server" "$PIHOLE_DNS_1"
+    fi
+    # Ditto if DNS2 is not empty
+    if [[ "${PIHOLE_DNS_2}" != "" ]]; then
+        addKey "${dnsmasq_pihole_01_target}" "server=$PIHOLE_DNS_2"
+    fi
+
+    # Set the cache size
+    addOrEditKeyValPair "${dnsmasq_pihole_01_target}" "cache-size" "$CACHE_SIZE"
+
+    sed -i 's/^#conf-dir=\/etc\/dnsmasq.d$/conf-dir=\/etc\/dnsmasq.d/' "${dnsmasq_conf}"
+
+    # If the user does not want to enable logging,
+    if [[ "${QUERY_LOGGING}" == false ]] ; then
+        # remove itfrom the DNS config file
+        removeKey "${dnsmasq_pihole_01_target}" "log-queries"
+    else
+        # Otherwise, enable it by adding the directive to the DNS config file
+        addKey "${dnsmasq_pihole_01_target}" "log-queries"
+    fi
+
+    printf "  %b Installing %s..." "${INFO}" "${dnsmasq_rfc6761_06_source}"
+    install -D -m 644 -T "${dnsmasq_rfc6761_06_source}" "${dnsmasq_rfc6761_06_target}"
+    printf "%b  %b Installed %s\n" "${OVER}"  "${TICK}" "${dnsmasq_rfc6761_06_target}"
+}
+
+# Install the configs from PI_HOLE_LOCAL_REPO to their various locations
+installConfigs() {
+    printf "\\n  %b Installing configs from %s...\\n" "${INFO}" "${PI_HOLE_LOCAL_REPO}"
+    # Make sure Pi-hole's config files are in place
+    version_check_dnsmasq
+
+    # Install list of DNS servers
+    # Format: Name;Primary IPv4;Secondary IPv4;Primary IPv6;Secondary IPv6
+    # Some values may be empty (for example: DNS servers without IPv6 support)
+    echo "${DNS_SERVERS}" > "${PI_HOLE_CONFIG_DIR}/dns-servers.conf"
+    chmod 644 "${PI_HOLE_CONFIG_DIR}/dns-servers.conf"
+
+    # Install template file if it does not exist
+    if [[ ! -r "${FTL_CONFIG_FILE}" ]]; then
+        install -d -m 0755 ${PI_HOLE_CONFIG_DIR}
+        if ! install -T -o pihole -m 664 "${PI_HOLE_LOCAL_REPO}/advanced/Templates/pihole-FTL.conf" "${FTL_CONFIG_FILE}" &>/dev/null; then
+            printf "  %b Error: Unable to initialize configuration file %s/pihole-FTL.conf\\n" "${COL_LIGHT_RED}" "${PI_HOLE_CONFIG_DIR}"
+            return 1
+        fi
+    fi
+
+    # Install empty custom.list file if it does not exist
+    if [[ ! -r "${PI_HOLE_CONFIG_DIR}/custom.list" ]]; then
+        if ! install -o root -m 644 /dev/null "${PI_HOLE_CONFIG_DIR}/custom.list" &>/dev/null; then
+            printf "  %b Error: Unable to initialize configuration file %s/custom.list\\n" "${COL_LIGHT_RED}" "${PI_HOLE_CONFIG_DIR}"
+            return 1
+        fi
+    fi
+
+    # Install pihole-FTL systemd or init.d service, based on whether systemd is the init system or not
+    # Follow debhelper logic, which checks for /run/systemd/system to derive whether systemd is the init system
+    if [[ -d '/run/systemd/system' ]]; then
+        install -T -m 0644 "${PI_HOLE_LOCAL_REPO}/advanced/Templates/pihole-FTL.systemd" '/etc/systemd/system/pihole-FTL.service'
+
+        # Remove init.d service if present
+        if [[ -e '/etc/init.d/pihole-FTL' ]]; then
+            rm '/etc/init.d/pihole-FTL'
+            update-rc.d pihole-FTL remove
+        fi
+
+        # Load final service
+        systemctl daemon-reload
+    else
+        install -T -m 0755 "${PI_HOLE_LOCAL_REPO}/advanced/Templates/pihole-FTL.service" '/etc/init.d/pihole-FTL'
+    fi
+    install -T -m 0755 "${PI_HOLE_LOCAL_REPO}/advanced/Templates/pihole-FTL-prestart.sh" "${PI_HOLE_INSTALL_DIR}/pihole-FTL-prestart.sh"
+    install -T -m 0755 "${PI_HOLE_LOCAL_REPO}/advanced/Templates/pihole-FTL-poststop.sh" "${PI_HOLE_INSTALL_DIR}/pihole-FTL-poststop.sh"
+
+    # If the user chose to install the dashboard,
+    if [[ "${INSTALL_WEB_SERVER}" == true ]]; then
+        # set permissions on /etc/lighttpd/lighttpd.conf so pihole user (other) can read the file
+        chmod o+x /etc/lighttpd
+        chmod o+r "${lighttpdConfig}"
+
+        # Ensure /run/lighttpd exists and is owned by lighttpd user
+        # Needed for the php socket
+        mkdir -p /run/lighttpd
+        chown ${LIGHTTPD_USER}:${LIGHTTPD_GROUP} /run/lighttpd
+
+        if grep -q -F "OVERWRITTEN BY PI-HOLE" "${lighttpdConfig}"; then
+            # Attempt to preserve backwards compatibility with older versions
+            install -D -m 644 -T ${PI_HOLE_LOCAL_REPO}/advanced/${LIGHTTPD_CFG} "${lighttpdConfig}"
+            # Make the directories if they do not exist and set the owners
+            mkdir -p /var/cache/lighttpd/compress
+            chown ${LIGHTTPD_USER}:${LIGHTTPD_GROUP} /var/cache/lighttpd/compress
+            mkdir -p /var/cache/lighttpd/uploads
+            chown ${LIGHTTPD_USER}:${LIGHTTPD_GROUP} /var/cache/lighttpd/uploads
+        fi
+        # Copy the config file to include for pihole admin interface
+        if [[ -d "/etc/lighttpd/conf.d" ]]; then
+            install -D -m 644 -T ${PI_HOLE_LOCAL_REPO}/advanced/pihole-admin.conf /etc/lighttpd/conf.d/pihole-admin.conf
+            if grep -q -F 'include "/etc/lighttpd/conf.d/pihole-admin.conf"' "${lighttpdConfig}"; then
+                :
+            else
+                echo 'include "/etc/lighttpd/conf.d/pihole-admin.conf"' >> "${lighttpdConfig}"
+            fi
+            # Avoid some warnings trace from lighttpd, which might break tests
+            conf=/etc/lighttpd/conf.d/pihole-admin.conf
+            if lighttpd -f "${lighttpdConfig}" -tt 2>&1 | grep -q -F "WARNING: unknown config-key: dir-listing\."; then
+                echo '# Avoid some warnings trace from lighttpd, which might break tests' >> $conf
+                echo 'server.modules += ( "mod_dirlisting" )' >> $conf
+            fi
+            if lighttpd -f "${lighttpdConfig}" -tt 2>&1 | grep -q -F "warning: please use server.use-ipv6"; then
+                echo '# Avoid some warnings trace from lighttpd, which might break tests' >> $conf
+                echo 'server.use-ipv6 := "disable"' >> $conf
+            fi
+        elif [[ -d "/etc/lighttpd/conf-available" ]]; then
+            conf=/etc/lighttpd/conf-available/15-pihole-admin.conf
+            install -D -m 644 -T ${PI_HOLE_LOCAL_REPO}/advanced/pihole-admin.conf $conf
+
+            # Get the version number of lighttpd
+            version=$(dpkg-query -f='${Version}\n' --show lighttpd)
+            # Test if that version is greater than or euqal to 1.4.56
+            if dpkg --compare-versions "$version" "ge" "1.4.56"; then
+                # If it is, then we don't need to disable the modules
+                # (server.modules duplication is ignored in lighttpd 1.4.56+)
+                :
+            else
+                # disable server.modules += ( ... ) in $conf to avoid module dups
+                if awk '!/^server\.modules/{print}' $conf > $conf.$$ && mv $conf.$$ $conf; then
+                :
+                else
+                    rm $conf.$$
+                fi
+            fi
+
+            chmod 644 $conf
+            if is_command lighty-enable-mod ; then
+                lighty-enable-mod pihole-admin access accesslog redirect fastcgi setenv > /dev/null || true
+            else
+                # Otherwise, show info about installing them
+                printf "  %b Warning: 'lighty-enable-mod' utility not found\\n" "${INFO}"
+                printf "      Please ensure fastcgi is enabled if you experience issues\\n"
+            fi
+        else
+            # lighttpd config include dir not found
+            printf "  %b Warning: lighttpd config include dir not found\\n" "${INFO}"
+            printf "      Please manually install pihole-admin.conf\\n"
+        fi
+    fi
+}
+
+# This function saves any changes to the setup variables into the setupvars.conf file for future runs
+finalExports() {
+    # set or update the variables in the file
+
+    addOrEditKeyValPair "${setupVars}" "PIHOLE_INTERFACE" "${PIHOLE_INTERFACE}"
+    addOrEditKeyValPair "${setupVars}" "PIHOLE_DNS_1" "${PIHOLE_DNS_1}"
+    addOrEditKeyValPair "${setupVars}" "PIHOLE_DNS_2" "${PIHOLE_DNS_2}"
+    addOrEditKeyValPair "${setupVars}" "QUERY_LOGGING" "${QUERY_LOGGING}"
+    addOrEditKeyValPair "${setupVars}" "INSTALL_WEB_SERVER" "${INSTALL_WEB_SERVER}"
+    addOrEditKeyValPair "${setupVars}" "INSTALL_WEB_INTERFACE" "${INSTALL_WEB_INTERFACE}"
+    addOrEditKeyValPair "${setupVars}" "LIGHTTPD_ENABLED" "${LIGHTTPD_ENABLED}"
+    addOrEditKeyValPair "${setupVars}" "CACHE_SIZE" "${CACHE_SIZE}"
+    addOrEditKeyValPair "${setupVars}" "DNS_FQDN_REQUIRED" "${DNS_FQDN_REQUIRED:-true}"
+    addOrEditKeyValPair "${setupVars}" "DNS_BOGUS_PRIV" "${DNS_BOGUS_PRIV:-true}"
+    addOrEditKeyValPair "${setupVars}" "DNSMASQ_LISTENING" "${DNSMASQ_LISTENING:-local}"
+
+    chmod 644 "${setupVars}"
+
+    # Set the privacy level
+    addOrEditKeyValPair "${FTL_CONFIG_FILE}" "PRIVACYLEVEL" "${PRIVACY_LEVEL}"
+
+    # Bring in the current settings and the functions to manipulate them
+    source "${setupVars}"
+    # shellcheck source=advanced/Scripts/webpage.sh
+    source "${PI_HOLE_LOCAL_REPO}/advanced/Scripts/webpage.sh"
+
+    # Look for DNS server settings which would have to be reapplied
+    ProcessDNSSettings
+
+    # Look for DHCP server settings which would have to be reapplied
+    ProcessDHCPSettings
+}
+
+
+# Install base files and web interface
+installPihole() {
+    # If the user wants to install the Web interface,
+    if [[ "${INSTALL_WEB_INTERFACE}" == true ]]; then
+        if [[ ! -d "${webroot}" ]]; then
+            # make the Web directory if necessary
+            install -d -m 0755 ${webroot}
+        fi
+
+        if [[ "${INSTALL_WEB_SERVER}" == true ]]; then
+            # Set the owner and permissions
+            chown ${LIGHTTPD_USER}:${LIGHTTPD_GROUP} ${webroot}
+            chmod 0775 ${webroot}
+            # Repair permissions if webroot is not world readable
+            chmod a+rx /var/www
+            chmod a+rx ${webroot}
+            # Give lighttpd access to the pihole group so the web interface can
+            # manage the gravity.db database
+            usermod -a -G pihole ${LIGHTTPD_USER}
+        fi
+    fi
+
+    
+
+    # Install base files and web interface
+    if ! installScripts; then
+        printf "  %b Failure in dependent script copy function.\\n" "${CROSS}"
+        exit 1
+    fi
+
+    # /opt/pihole/utils.sh should be installed by installScripts now, so we can use it
+    if [ -f "${PI_HOLE_INSTALL_DIR}/utils.sh" ]; then
+        # shellcheck disable=SC1091
+        source "${PI_HOLE_INSTALL_DIR}/utils.sh"
+    else
+        printf "  %b Failure: /opt/pihole/utils.sh does not exist .\\n" "${CROSS}"
+        exit 1
+    fi
+
+    # Install config files
+    if ! installConfigs; then
+        printf "  %b Failure in dependent config copy function.\\n" "${CROSS}"
+        exit 1
+    fi
+
+    # If the user wants to install the dashboard,
+    if [[ "${INSTALL_WEB_INTERFACE}" == true ]]; then
+        # do so
+        installPiholeWeb
+    fi
+    # Install the cron file
+    installCron
+
+    # Install the logrotate file
+    installLogrotate || true
+
+    # Check if dnsmasq is present. If so, disable it and back up any possible
+    # config file
+    disable_dnsmasq
+
+    # install a man page entry for pihole
+    install_manpage
+
+    # Update setupvars.conf with any variables that may or may not have been changed during the install
+    finalExports
+}
+
+# Install the Web interface dashboard
+installPiholeWeb() {
+    # Install Sudoers file
+    local str="Installing sudoer file"
+    printf "\\n  %b %s..." "${INFO}" "${str}"
+    # Make the .d directory if it doesn't exist,
+    install -d -m 755 /etc/sudoers.d/
+    # and copy in the pihole sudoers file
+    install -m 0640 ${PI_HOLE_LOCAL_REPO}/advanced/Templates/pihole.sudo /etc/sudoers.d/pihole
+    # Add lighttpd user (OS dependent) to sudoers file
+    echo "${LIGHTTPD_USER} ALL=NOPASSWD: ${PI_HOLE_BIN_DIR}/pihole" >> /etc/sudoers.d/pihole
+
+    # If the Web server user is lighttpd,
+    if [[ "$LIGHTTPD_USER" == "lighttpd" ]]; then
+        # Allow executing pihole via sudo with Fedora
+        # Usually /usr/local/bin ${PI_HOLE_BIN_DIR} is not permitted as directory for sudoable programs
+        echo "Defaults secure_path = /sbin:/bin:/usr/sbin:/usr/bin:${PI_HOLE_BIN_DIR}" >> /etc/sudoers.d/pihole
+    fi
+    # Set the strict permissions on the file
+    chmod 0440 /etc/sudoers.d/pihole
+    printf "%b  %b %s\\n" "${OVER}" "${TICK}" "${str}"
+}
+
+
+copy_to_install_log() {
+    # Copy the contents of file descriptor 3 into the install log
+    # Since we use color codes such as '\e[1;33m', they should be removed
+    sed 's/\[[0-9;]\{1,5\}m//g' < /proc/$$/fd/3 > "${installLogLoc}"
+    chmod 644 "${installLogLoc}"
+}
+
+# Systemd-resolved's DNSStubListener and dnsmasq can't share port 53.
+disable_resolved_stublistener() {
+    printf "  %b Testing if systemd-resolved is enabled\\n" "${INFO}"
+    # Check if Systemd-resolved's DNSStubListener is enabled and active on port 53
+    if check_service_active "systemd-resolved"; then
+        # Check if DNSStubListener is enabled
+        printf "  %b %b Testing if systemd-resolved DNSStub-Listener is active" "${OVER}" "${INFO}"
+        if ( grep -E '#?DNSStubListener=yes' /etc/systemd/resolved.conf &> /dev/null ); then
+            # Disable the DNSStubListener to unbind it from port 53
+            # Note that this breaks dns functionality on host until dnsmasq/ftl are up and running
+            printf "%b  %b Disabling systemd-resolved DNSStubListener" "${OVER}" "${TICK}"
+            # Make a backup of the original /etc/systemd/resolved.conf
+            # (This will need to be restored on uninstallation)
+            sed -r -i.orig 's/#?DNSStubListener=yes/DNSStubListener=no/g' /etc/systemd/resolved.conf
+            printf " and restarting systemd-resolved\\n"
+            systemctl reload-or-restart systemd-resolved
+        else
+            printf "%b  %b Systemd-resolved does not need to be restarted\\n" "${OVER}" "${INFO}"
+        fi
+    else
+        printf "%b  %b Systemd-resolved is not enabled\\n" "${OVER}" "${INFO}"
+    fi
+}
+
+displayFinalMessage() {
+    # If the number of arguments is > 0,
+    if [[ "${#1}" -gt 0 ]] ; then
+        # set the password to the first argument.
+        pwstring="$1"
+    elif [[ $(grep 'WEBPASSWORD' -c "${setupVars}") -gt 0 ]]; then
+        # Else if the password exists from previous setup, we'll load it later
+        pwstring="unchanged"
+    else
+        # Else, inform the user that there is no set password.
+        pwstring="NOT SET"
+    fi
+    # If the user wants to install the dashboard,
+    if [[ "${INSTALL_WEB_INTERFACE}" == true ]]; then
+        # Store a message in a variable and display it
+        additional="View the web interface at http://pi.hole/admin or http://${IPV4_ADDRESS%/*}/admin\\n\\nYour Admin Webpage login password is ${pwstring}"
+    fi
+
+    # Final completion message to user
+    dialog --no-shadow --keep-tite \
+        --title "Installation Complete!" \
+        --msgbox "Configure your devices to use the Pi-hole as their DNS server using:\
+\\n\\nIPv4:	${IPV4_ADDRESS%/*}\
+\\nIPv6:	${IPV6_ADDRESS:-"Not Configured"}\
+\\nIf you have not done so already, the above IP should be set to static.\
+\\n${additional}" "${r}" "${c}"
 }
 
 main() {
@@ -1416,7 +2256,140 @@ main() {
         LIGHTTPD_ENABLED=false
     fi
 
-    create_dnsfis_user
+    create_pihole_user
+
+    # Check if FTL is installed - do this early on as FTL is a hard dependency for Pi-hole
+    local funcOutput
+    funcOutput=$(get_binary_name) #Store output of get_binary_name here
+    local binary
+    binary="pihole-FTL${funcOutput##*pihole-FTL}" #binary name will be the last line of the output of get_binary_name (it always begins with pihole-FTL)
+    local theRest
+    theRest="${funcOutput%pihole-FTL*}" # Print the rest of get_binary_name's output to display (cut out from first instance of "pihole-FTL")
+    if ! FTLdetect "${binary}" "${theRest}"; then
+        printf "  %b FTL Engine not installed\\n" "${CROSS}"
+        exit 1
+    fi
+
+    # Install and log everything to a file
+    installPihole | tee -a /proc/$$/fd/3
+
+    # # Copy the temp log file into final log location for storage
+    copy_to_install_log
+
+    if [[ "${INSTALL_WEB_INTERFACE}" == true ]]; then
+        # Add password to web UI if there is none
+        pw=""
+        # If no password is set,
+        if [[ $(grep 'WEBPASSWORD' -c "${setupVars}") == 0 ]] ; then
+            # generate a random password
+            pw=$(tr -dc _A-Z-a-z-0-9 < /dev/urandom | head -c 8)
+            # shellcheck disable=SC1091
+            . /opt/pihole/webpage.sh
+            echo "WEBPASSWORD=$(HashPassword "${pw}")" >> "${setupVars}"
+        fi
+    fi
+
+    # Check for and disable systemd-resolved-DNSStubListener before reloading resolved
+    # DNSStubListener needs to remain in place for installer to download needed files,
+    # so this change needs to be made after installation is complete,
+    # but before starting or restarting the dnsmasq or ftl services
+    disable_resolved_stublistener
+
+    # If the Web server was installed,
+    if [[ "${INSTALL_WEB_SERVER}" == true ]]; then
+        if [[ "${LIGHTTPD_ENABLED}" == true ]]; then
+            restart_service lighttpd
+            enable_service lighttpd
+        else
+            printf "  %b Lighttpd is disabled, skipping service restart\\n" "${INFO}"
+        fi
+    fi
+
+    printf "  %b Restarting services...\\n" "${INFO}"
+
+    # Start services
+
+    # Enable FTL
+    # Ensure the service is enabled before trying to start it
+    # Fixes a problem reported on Ubuntu 18.04 where trying to start
+    # the service before enabling causes installer to exit
+    enable_service pihole-FTL
+
+    # If this is an update from a previous Pi-hole installation
+    # we need to move any existing `pihole*` logs from `/var/log` to `/var/log/pihole`
+    # if /var/log/pihole.log is not a symlink (set during FTL startup) move the files
+    # can be removed with Pi-hole v6.0
+    # To be sure FTL is not running when we move the files we explicitly stop it here
+
+    stop_service pihole-FTL &> /dev/null
+
+    if [ ! -d /var/log/pihole/ ]; then
+        mkdir -m 0755 /var/log/pihole/
+    fi
+
+    # Special handling for pihole-FTL.log -> pihole/FTL.log
+    if [ -f /var/log/pihole-FTL.log ] && [ ! -L /var/log/pihole-FTL.log ]; then
+        # /var/log/pihole-FTL.log      -> /var/log/pihole/FTL.log
+        # /var/log/pihole-FTL.log.1    -> /var/log/pihole/FTL.log.1
+        # /var/log/pihole-FTL.log.2.gz -> /var/log/pihole/FTL.log.2.gz
+        # /var/log/pihole-FTL.log.3.gz -> /var/log/pihole/FTL.log.3.gz
+        # /var/log/pihole-FTL.log.4.gz -> /var/log/pihole/FTL.log.4.gz
+        # /var/log/pihole-FTL.log.5.gz -> /var/log/pihole/FTL.log.5.gz
+        for f in /var/log/pihole-FTL.log*; do mv "$f" "$( sed "s/pihole-/pihole\//" <<< "$f")"; done
+    fi
+
+    # Remaining log files
+    if [ -f /var/log/pihole.log ] && [ ! -L /var/log/pihole.log ]; then
+        mv /var/log/pihole*.* /var/log/pihole/ 2>/dev/null
+    fi
+
+    restart_service pihole-FTL
+
+    # Download and compile the aggregated block list
+    runGravity
+
+    # Update local and remote versions via updatechecker
+    /opt/pihole/updatecheck.sh
+
+    if [[ "${useUpdateVars}" == false ]]; then
+        displayFinalMessage "${pw}"
+    fi
+
+    # If the Web interface was installed,
+    if [[ "${INSTALL_WEB_INTERFACE}" == true ]]; then
+        # If there is a password,
+        if (( ${#pw} > 0 )) ; then
+            # display the password
+            printf "  %b Web Interface password: %b%s%b\\n" "${INFO}" "${COL_LIGHT_GREEN}" "${pw}" "${COL_NC}"
+            printf "  %b This can be changed using 'pihole -a -p'\\n\\n" "${INFO}"
+        fi
+    fi
+
+    if [[ "${useUpdateVars}" == false ]]; then
+        # If the Web interface was installed,
+        if [[ "${INSTALL_WEB_INTERFACE}" == true ]]; then
+            printf "  %b View the web interface at http://pi.hole/admin or http://%s/admin\\n\\n" "${INFO}" "${IPV4_ADDRESS%/*}"
+        fi
+        # Explain to the user how to use Pi-hole as their DNS server
+        printf "  %b You may now configure your devices to use the Pi-hole as their DNS server\\n" "${INFO}"
+        [[ -n "${IPV4_ADDRESS%/*}" ]] && printf "  %b Pi-hole DNS (IPv4): %s\\n" "${INFO}" "${IPV4_ADDRESS%/*}"
+        [[ -n "${IPV6_ADDRESS}" ]] && printf "  %b Pi-hole DNS (IPv6): %s\\n" "${INFO}" "${IPV6_ADDRESS}"
+        printf "  %b If you have not done so already, the above IP should be set to static.\\n" "${INFO}"
+        INSTALL_TYPE="Installation"
+    else
+        INSTALL_TYPE="Update"
+    fi
+
+    # Display where the log file is
+    printf "\\n  %b The install log is located at: %s\\n" "${INFO}" "${installLogLoc}"
+    printf "  %b %b%s complete! %b\\n" "${TICK}" "${COL_LIGHT_GREEN}" "${INSTALL_TYPE}" "${COL_NC}"
+
+    if [[ "${INSTALL_TYPE}" == "Update" ]]; then
+        printf "\\n"
+        "${PI_HOLE_BIN_DIR}"/pihole version --current
+    fi
+
+
 
 }
 
